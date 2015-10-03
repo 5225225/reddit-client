@@ -4,11 +4,13 @@ import datetime
 import sys
 import time
 import warnings
+import textwrap
 
 import praw
 
 import authenticate
 import util
+import viewer
 
 warnings.simplefilter("ignore", ResourceWarning)
 warnings.simplefilter("ignore", ImportWarning)
@@ -25,9 +27,14 @@ def resize_screen():
     curses.update_lines_cols()
 
     win_status_bar = curses.newwin(1, curses.COLS)
-    list_view_pad = curses.newpad(300 + 2*3, curses.COLS)
-    # The length of posts is not always going to be 100, as stickies are returned
-    # separately, so it's 100 + number of stickies.
+    list_view_pad = curses.newpad((100 + 2)*3, curses.COLS)
+    # The length of posts is not always going to be 100, account for this.
+
+    # One factor that can change the required size of this pad is stickies, as
+    # they are not included in the 100 post limit. Also, reddit might increase
+    # the post limit (maybe for gold users), but that hasn't been done yet.
+    # Plus, subreddits which have less than 100 total posts will have some
+    # space unused, but the code handles that well already.
 
     command_bar = curses.newwin(1, curses.COLS, curses.LINES-1, 0)
 
@@ -47,9 +54,8 @@ def readcommand(disp, prompt):
     return cmd
 
 def refresh_list_view(list_view_pad, subreddit):
-    global lenposts
+    global posts
     posts = util.refresh_subreddit(subreddit, sort, filter_time)
-    lenposts = len(posts)
     list_view_pad.clear()
     list_view_pad.move(0,0)
     for i, post in enumerate(posts):
@@ -63,7 +69,12 @@ def refresh_list_view(list_view_pad, subreddit):
 
 
         points = post.score
-        author = post.author.name
+
+
+        try:
+            author = post.author.name
+        except AttributeError:
+            author = "[deleted]"
 
         comments = str(post.num_comments)
         if post.num_comments == 1:
@@ -74,12 +85,24 @@ def refresh_list_view(list_view_pad, subreddit):
         nowdate = datetime.datetime.fromtimestamp(time.time())
         postdate = datetime.datetime.fromtimestamp(post.created_utc)
 
-        ago = postdate - nowdate
+        ago = nowdate - postdate
+
+        sys.stderr.write("posted: {}\nnow: {}\ndiff: {}\nhumanify: {}".format(
+            postdate,
+            nowdate,
+            ago,
+            util.humanify_td(ago)
+        ))
 
         ago = util.humanify_td(ago)
 
-        line2 = "{} points submitted {} ago by {} {}".format(points, ago, author,
-        comments)
+        if str(subreddit) == "all" or subreddit == None:
+            subredditname = " to {}".format(post.subreddit)
+        else:
+            subredditname = ""
+
+        line2 = "{} points submitted {} ago by {}{} {}".format(points, ago,
+        author, subredditname, comments)
 
         list_view_pad.addstr(pos + 1, 1, line2)
 
@@ -131,17 +154,20 @@ atexit.register(shutdown, scr)
 
 win_status_bar = curses.newwin(1, curses.COLS)
 list_view_pad = curses.newpad(300 + 2*3, curses.COLS)
-lenposts = 0
 # The length of posts is not always going to be 100, as stickies are returned
 # separately, so it's 100 + number of stickies.
 
+posts = []
 command_bar = curses.newwin(1, curses.COLS, curses.LINES-1, 0)
 
 screen = "post-list"
-sort = "hot"
+sort = "new"
 filter_time = "all"
 index = 0
 viewing = 0
+
+viewing_post = None
+
 # Can be "front", "post-list", "comments"
 
 subreddit = reddit.get_subreddit("redditdev")
@@ -158,7 +184,7 @@ while True:
     if "viewing" in needs_refreshing:
         if viewing > 0:
             list_view_pad.vline(viewing * 3 - 3, 0, " ", 9)
-        if viewing < lenposts - 1:
+        if viewing < len(posts) - 1:
             list_view_pad.vline(viewing * 3 + 3, 0, " ", 9)
         list_view_pad.vline(viewing * 3, 0, "|", 2)
 
@@ -180,7 +206,7 @@ while True:
     if screen == "post-list":
         ch = command_bar.getch()
         if chr(ch) == "j":
-            if viewing < lenposts - 1:
+            if viewing < len(posts) - 1:
                 viewing += 1
                 needs_refreshing.append("viewing")
 
@@ -197,6 +223,19 @@ while True:
 
             needs_refreshing.append("list-view")
             needs_refreshing.append("status-bar")
+
+        if chr(ch) == "s":
+            sorting_method = readcommand(command_bar, "sort: ").decode("UTF-8")
+            sort = sorting_method
+            index = 0
+            viewing = 0
+
+            needs_refreshing.append("list-view")
+            needs_refreshing.append("status-bar")
+
+        if chr(ch) == "\n":
+            post = posts[viewing]
+            viewer.view(post)
 
         if ch == curses.KEY_RESIZE:
             resize_screen()
